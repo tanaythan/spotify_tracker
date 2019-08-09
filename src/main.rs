@@ -76,7 +76,7 @@ impl State {
         match current_song {
             Ok(song) => match song {
                 Some(s) => {
-                    let should_upload = self.compare_song(&s);
+                    let should_upload = self.cache.should_upload(&s);
                     if should_upload {
                         let value = self.insert_song(&s);
                         self.cache.has_uploaded(value.is_some());
