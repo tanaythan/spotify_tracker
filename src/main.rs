@@ -94,10 +94,6 @@ impl State {
         }
     }
 
-    fn compare_song(&mut self, song: &SimplifiedPlayingContext) -> bool {
-        self.cache.should_upload(song)
-    }
-
     fn insert_song(&self, song: &SimplifiedPlayingContext) -> Option<SongPlay> {
         let full_track = song.item.clone().unwrap();
         insert_song(
