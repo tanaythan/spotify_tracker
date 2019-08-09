@@ -129,19 +129,13 @@ fn main() {
             let client_credential = SpotifyClientCredentials::default()
                 .token_info(token_info)
                 .build();
-            let spotify = Spotify::default()
+            Spotify::default()
                 .client_credentials_manager(client_credential)
-                .build();
-            Some(spotify)
+                .build()
         }
-        None => None,
+        None => panic!("Spotify client must be credentialed!"),
     };
 
-    if spotify.is_none() {
-        panic!("Spotify client must be credentialied!")
-    }
-
-    let spotify = spotify.unwrap();
     let db_conn = establish_connection(config.db_url);
     let cache = CachedData::new();
     let mut state = State {
