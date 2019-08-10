@@ -51,17 +51,22 @@ impl CachedData {
             self.has_uploaded = false;
             return false;
         }
-        let item = song.clone().item.unwrap();
-        let old_item = self.previous.clone().unwrap().item.unwrap();
-        if item.name == old_item.name && self.has_uploaded {
+        let item = song.clone().progress_ms;
+        let old_item = self.previous.clone().unwrap().progress_ms;
+
+        if item.is_none() || old_item.is_none() {
             return false;
-        } else if item.name == old_item.name && !self.has_uploaded {
-            let timestamp = song.clone().progress_ms;
-            match timestamp {
-                Some(ts) => return ts >= 30000,
-                None => return false,
-            };
-        } else if item.name != old_item.name {
+        }
+
+        let item = item.unwrap();
+        let old_item = old_item.unwrap();
+
+        if item > old_item && self.has_uploaded {
+            return false;
+        } else if item > old_item && !self.has_uploaded {
+            self.previous = Some(song.clone());
+            return item >= 30000;
+        } else if item < old_item {
             self.previous = Some(song.clone());
             self.has_uploaded = false;
             return false;
@@ -76,8 +81,7 @@ impl State {
         match current_song {
             Ok(song) => match song {
                 Some(s) => {
-                    let should_upload = self.compare_song(&s);
-                    if should_upload {
+                    if self.cache.should_upload(&s) {
                         let value = self.insert_song(&s);
                         self.cache.has_uploaded(value.is_some());
                         value
@@ -92,10 +96,6 @@ impl State {
                 None
             }
         }
-    }
-
-    fn compare_song(&mut self, song: &SimplifiedPlayingContext) -> bool {
-        self.cache.should_upload(song)
     }
 
     fn insert_song(&self, song: &SimplifiedPlayingContext) -> Option<SongPlay> {
