@@ -48,8 +48,12 @@ impl CachedData {
     pub fn should_upload(&mut self, song: &SimplifiedPlayingContext) -> bool {
         if self.previous.is_none() {
             self.previous = Some(song.clone());
-            self.has_uploaded = false;
-            return false;
+            let song_duration = song.clone().progress_ms;
+            self.has_uploaded = match song_duration {
+                Some(ms) => ms >= 30000,
+                None => false,
+            };
+            return self.has_uploaded;
         }
         let item = song.clone().progress_ms;
         let old_item = self.previous.clone().unwrap().progress_ms;
@@ -66,7 +70,7 @@ impl CachedData {
         } else if item > old_item && !self.has_uploaded {
             self.previous = Some(song.clone());
             return item >= 30000;
-        } else if item < old_item {
+        } else if item <= old_item {
             self.previous = Some(song.clone());
             self.has_uploaded = false;
             return false;
@@ -146,5 +150,54 @@ fn main() {
     loop {
         println!("{:?}", state.maybe_add_song());
         thread::sleep(time::Duration::from_secs(5));
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::CachedData;
+    use super::SimplifiedPlayingContext;
+
+    fn create_playing_context(progress_ms: Option<u32>) -> SimplifiedPlayingContext {
+        SimplifiedPlayingContext {
+            context: None,
+            is_playing: true,
+            progress_ms,
+            timestamp: 0,
+            item: None,
+        }
+    }
+
+    #[test]
+    fn test_cache() {
+        let mut cache = CachedData::new();
+        let song = create_playing_context(Some(10));
+        assert_eq!(false, cache.should_upload(&song));
+
+        let song = create_playing_context(Some(100));
+        assert_eq!(false, cache.should_upload(&song));
+
+        let song = create_playing_context(Some(30000));
+        assert_eq!(true, cache.should_upload(&song));
+
+        cache.has_uploaded(true);
+
+        let song = create_playing_context(Some(31000));
+        assert_eq!(false, cache.should_upload(&song));
+
+        let song = create_playing_context(Some(29000));
+        assert_eq!(false, cache.should_upload(&song));
+
+        let song = create_playing_context(Some(30000));
+        assert_eq!(true, cache.should_upload(&song));
+
+        let song = create_playing_context(Some(33000));
+        assert_eq!(true, cache.should_upload(&song));
+
+        let song = create_playing_context(Some(34000));
+        assert_eq!(true, cache.should_upload(&song));
+
+        let song = create_playing_context(Some(34000));
+        assert_eq!(false, cache.should_upload(&song));
     }
 }
