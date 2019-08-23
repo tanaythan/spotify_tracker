@@ -15,6 +15,7 @@ use std::{thread, time};
 
 use db::{establish_connection, insert_song, SongPlay};
 
+#[derive(Clone, Debug)]
 struct Config {
     pub client_id: String,
     pub client_secret: String,
@@ -80,7 +81,7 @@ impl CachedData {
 }
 
 impl State {
-    pub fn maybe_add_song(&mut self) -> Option<SongPlay> {
+    pub fn maybe_add_song(&mut self, config: &Config) -> Option<SongPlay> {
         let current_song = self.spotify.current_playing(Some(Country::UnitedStates));
         match current_song {
             Ok(song) => match song {
@@ -96,7 +97,9 @@ impl State {
                 None => None,
             },
             Err(e) => {
-                println!("Error: {}\n from Spotify API", e);
+                println!("Error: {:?}\n from Spotify API", e);
+                self.spotify = authenticate_spotify(config);
+                println!("Reauthenticating!");
                 None
             }
         }
@@ -107,8 +110,34 @@ impl State {
         insert_song(
             &self.db_conn,
             &full_track.name,
-            &full_track.artists.first().unwrap().name,
+            full_track
+                .artists
+                .iter()
+                .map(|artist| artist.name.as_str())
+                .collect(),
+            &full_track.album.name,
         )
+    }
+}
+
+fn authenticate_spotify(config: &Config) -> Spotify {
+    let mut oauth = SpotifyOAuth::default()
+        .client_id(&config.client_id)
+        .client_secret(&config.client_secret)
+        .redirect_uri(&config.callback_url)
+        .scope("user-read-currently-playing")
+        .build();
+
+    match get_token(&mut oauth) {
+        Some(token_info) => {
+            let client_credential = SpotifyClientCredentials::default()
+                .token_info(token_info.clone())
+                .build();
+            dbg!(Spotify::default()
+                .client_credentials_manager(client_credential)
+                .build())
+        }
+        None => panic!("Spotify client must be credentialed!"),
     }
 }
 
@@ -121,26 +150,9 @@ fn main() {
         db_url: dotenv::var("DATABASE_URL").unwrap(),
     };
 
-    let mut oauth = SpotifyOAuth::default()
-        .client_id(&config.client_id)
-        .client_secret(&config.client_secret)
-        .redirect_uri(&config.callback_url)
-        .scope("user-read-currently-playing")
-        .build();
+    let spotify = authenticate_spotify(&config);
 
-    let spotify = match get_token(&mut oauth) {
-        Some(token_info) => {
-            let client_credential = SpotifyClientCredentials::default()
-                .token_info(token_info)
-                .build();
-            Spotify::default()
-                .client_credentials_manager(client_credential)
-                .build()
-        }
-        None => panic!("Spotify client must be credentialed!"),
-    };
-
-    let db_conn = establish_connection(config.db_url);
+    let db_conn = establish_connection(config.clone().db_url);
     let cache = CachedData::new();
     let mut state = State {
         spotify,
@@ -148,7 +160,7 @@ fn main() {
         cache,
     };
     loop {
-        println!("{:?}", state.maybe_add_song());
+        println!("{:?}", state.maybe_add_song(&config));
         thread::sleep(time::Duration::from_secs(5));
     }
 }

@@ -10,4 +10,3 @@ edition = "2018"
 rspotify = "0.6.0"
 dotenv = "0.14.1"
 diesel = { version = "1.4.2", features = ["postgres", "chrono"] }
-warp = "0.1.18"
