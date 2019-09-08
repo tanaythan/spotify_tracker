@@ -1,13 +1,14 @@
 use super::schema::*;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
+use serde::Serialize;
 use std::time::SystemTime;
 
 pub fn establish_connection(db_url: String) -> PgConnection {
     PgConnection::establish(&db_url).unwrap_or_else(|_| panic!("Error connecting to {}", db_url))
 }
 
-#[derive(Debug, Queryable)]
+#[derive(Clone, Debug, Queryable, Serialize)]
 pub struct SongPlay {
     pub id: i32,
     pub song_name: String,
@@ -43,6 +44,35 @@ pub fn insert_song<'a>(
         Ok(songplay) => Some(songplay),
         Err(e) => {
             println!("Error inserting: {}", e);
+            None
+        }
+    }
+}
+
+pub fn lookup_song_by_name(db_conn: &PgConnection, song: String) -> Option<Vec<SongPlay>> {
+    use song_plays::*;
+    let res = song_plays::table
+        .filter(song_name.eq(song))
+        .load::<SongPlay>(db_conn);
+
+    match res {
+        Ok(songs) => Some(songs),
+        Err(e) => {
+            println!("Error retrieving: {}", e);
+            None
+        }
+    }
+}
+
+pub fn lookup_song(db_conn: &PgConnection, id: i32) -> Option<SongPlay> {
+    let res = song_plays::table.find(id).load::<SongPlay>(db_conn);
+    match res {
+        Ok(song) => match song.get(0) {
+            Some(value) => Some((*value).clone()),
+            None => None,
+        },
+        Err(e) => {
+            println!("Error retrieving: {}", e);
             None
         }
     }
