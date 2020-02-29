@@ -27,9 +27,9 @@ fn main() {
         db_url: dotenv::var("DATABASE_URL").unwrap(),
     };
 
-    let mut worker = Worker::new(&config);
+    let mut worker = Worker::new(&config).unwrap();
 
-    let server = Server::new(config.db_url.clone());
+    let server = Server::new(config.db_url);
 
     std::thread::spawn(move || {
         worker.run();

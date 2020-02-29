@@ -83,7 +83,7 @@ impl Server {
             let conn = conn_wrapper.get_conn();
 
             let query_param = SongPath::borrow_from(&state);
-            let songs = lookup_song_by_name(&(*conn), query_param.song.clone());
+            let songs = lookup_song_by_name(&(*conn), &query_param.song);
 
             create_response(
                 &state,
@@ -93,7 +93,6 @@ impl Server {
             )
         };
 
-        // return message
         (state, message)
     }
 

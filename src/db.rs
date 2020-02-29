@@ -49,7 +49,7 @@ pub fn insert_song<'a>(
     }
 }
 
-pub fn lookup_song_by_name(db_conn: &PgConnection, song: String) -> Option<Vec<SongPlay>> {
+pub fn lookup_song_by_name<'a>(db_conn: &PgConnection, song: &'a str) -> Option<Vec<SongPlay>> {
     use song_plays::*;
     let res = song_plays::table
         .filter(song_name.eq(song))

@@ -6,7 +6,8 @@ use rspotify::spotify::model::context::SimplifiedPlayingContext;
 use rspotify::spotify::oauth2::{SpotifyClientCredentials, SpotifyOAuth};
 use rspotify::spotify::senum::Country;
 use rspotify::spotify::util::get_token;
-use std::{thread, time};
+use std::error::Error;
+use std::{fmt, thread, time};
 
 struct OAuthConfig {
     pub client_id: String,
@@ -17,6 +18,11 @@ struct OAuthConfig {
 struct SpotifyWrapper {
     spotify: Spotify,
     config: OAuthConfig,
+}
+
+#[derive(Debug)]
+pub enum SpotifyWrapperError {
+    UnauthenticatedClient,
 }
 
 struct CachedData {
@@ -30,18 +36,24 @@ pub struct Worker {
     cache: CachedData,
 }
 
+type SpotifyWrapperResult<T> = Result<T, SpotifyWrapperError>;
+
 impl SpotifyWrapper {
-    pub fn new(client_id: String, client_secret: String, callback_url: String) -> Self {
+    pub fn new(
+        client_id: String,
+        client_secret: String,
+        callback_url: String,
+    ) -> SpotifyWrapperResult<Self> {
         let config = OAuthConfig {
             client_id,
             client_secret,
             callback_url,
         };
-        let spotify = SpotifyWrapper::authenticate_spotify(&config);
-        SpotifyWrapper { spotify, config }
+        let spotify = Self::authenticate_spotify(&config)?;
+        Ok(SpotifyWrapper { spotify, config })
     }
 
-    fn authenticate_spotify(config: &OAuthConfig) -> Spotify {
+    fn authenticate_spotify(config: &OAuthConfig) -> SpotifyWrapperResult<Spotify> {
         let mut oauth = SpotifyOAuth::default()
             .client_id(&config.client_id)
             .client_secret(&config.client_secret)
@@ -52,13 +64,13 @@ impl SpotifyWrapper {
         match get_token(&mut oauth) {
             Some(token_info) => {
                 let client_credential = SpotifyClientCredentials::default()
-                    .token_info(token_info.clone())
+                    .token_info(token_info)
                     .build();
-                Spotify::default()
+                Ok(Spotify::default()
                     .client_credentials_manager(client_credential)
-                    .build()
+                    .build())
             }
-            None => panic!("Spotify client must be credentialed!"),
+            None => Err(SpotifyWrapperError::UnauthenticatedClient),
         }
     }
 
@@ -67,7 +79,13 @@ impl SpotifyWrapper {
             Ok(spc) => spc,
             Err(e) => {
                 println!("Detected error from spotify API: {}", e);
-                self.spotify = Self::authenticate_spotify(&self.config);
+                self.spotify = match Self::authenticate_spotify(&self.config) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        println!("Received err {}", e);
+                        return None;
+                    }
+                };
                 println!("Reauthenticated client!");
                 self.current_playing(market)
             }
@@ -122,20 +140,20 @@ impl CachedData {
 }
 
 impl Worker {
-    pub fn new(config: &super::Config) -> Self {
+    pub fn new(config: &super::Config) -> SpotifyWrapperResult<Self> {
         let db_conn = establish_connection(config.db_url.clone());
         let cache = CachedData::new();
         let spotify = SpotifyWrapper::new(
             config.client_id.clone(),
             config.client_secret.clone(),
             config.callback_url.clone(),
-        );
+        )?;
 
-        Worker {
+        Ok(Worker {
             db_conn,
             cache,
             spotify,
-        }
+        })
     }
 
     pub fn maybe_add_song(&mut self) -> Option<SongPlay> {
@@ -172,6 +190,22 @@ impl Worker {
         loop {
             println!("{:?}", self.maybe_add_song());
             thread::sleep(time::Duration::from_secs(5));
+        }
+    }
+}
+
+impl fmt::Display for SpotifyWrapperError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SpotifyWrapperError::UnauthenticatedClient => write!(f, "Unauthenticated client!"),
+        }
+    }
+}
+
+impl Error for SpotifyWrapperError {
+    fn description(&self) -> &str {
+        match self {
+            SpotifyWrapperError::UnauthenticatedClient => "Unauthenticated client",
         }
     }
 }
