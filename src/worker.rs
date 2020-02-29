@@ -108,7 +108,7 @@ impl CachedData {
     pub fn should_upload(&mut self, song: &SimplifiedPlayingContext) -> bool {
         if self.previous.is_none() {
             self.previous = Some(song.clone());
-            let song_duration = song.clone().progress_ms;
+            let song_duration = song.progress_ms;
             self.has_uploaded = match song_duration {
                 Some(ms) => ms >= 30000,
                 None => false,
