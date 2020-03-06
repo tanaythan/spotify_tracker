@@ -9,10 +9,13 @@ edition = "2018"
 [dependencies]
 diesel = { version = "1.4", features = ["postgres", "chrono"] }
 dotenv = "0.14"
+rspotify = "0.9.0"
+tokio = { version = "0.2", features = ["full"] }
+winapi = "0.3.8"
+
 gotham = "0.4"
 gotham_derive = "0.4"
 hyper = "0.12"
 mime = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-rspotify = "0.8.0"

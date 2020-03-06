@@ -1,13 +1,13 @@
 use super::db::{establish_connection, insert_song, SongPlay};
 
 use diesel::PgConnection;
-use rspotify::spotify::client::Spotify;
-use rspotify::spotify::model::context::SimplifiedPlayingContext;
-use rspotify::spotify::oauth2::{SpotifyClientCredentials, SpotifyOAuth};
-use rspotify::spotify::senum::Country;
-use rspotify::spotify::util::get_token;
+use rspotify::client::Spotify;
+use rspotify::model::context::SimplifiedPlayingContext;
+use rspotify::oauth2::{SpotifyClientCredentials, SpotifyOAuth};
+use rspotify::senum::Country;
+use rspotify::util::get_token;
 use std::error::Error;
-use std::{fmt, thread, time};
+use std::fmt;
 
 struct OAuthConfig {
     pub client_id: String,
@@ -16,7 +16,7 @@ struct OAuthConfig {
 }
 
 struct SpotifyWrapper {
-    spotify: Spotify,
+    spotify: Option<Spotify>,
     config: OAuthConfig,
 }
 
@@ -49,11 +49,13 @@ impl SpotifyWrapper {
             client_secret,
             callback_url,
         };
-        let spotify = Self::authenticate_spotify(&config)?;
-        Ok(SpotifyWrapper { spotify, config })
+        Ok(SpotifyWrapper {
+            spotify: None,
+            config,
+        })
     }
 
-    fn authenticate_spotify(config: &OAuthConfig) -> SpotifyWrapperResult<Spotify> {
+    async fn authenticate_spotify(config: &OAuthConfig) -> SpotifyWrapperResult<Spotify> {
         let mut oauth = SpotifyOAuth::default()
             .client_id(&config.client_id)
             .client_secret(&config.client_secret)
@@ -61,7 +63,7 @@ impl SpotifyWrapper {
             .scope("user-read-currently-playing")
             .build();
 
-        match get_token(&mut oauth) {
+        match get_token(&mut oauth).await {
             Some(token_info) => {
                 let client_credential = SpotifyClientCredentials::default()
                     .token_info(token_info)
@@ -74,22 +76,35 @@ impl SpotifyWrapper {
         }
     }
 
-    pub fn current_playing(&mut self, market: Option<Country>) -> Option<SimplifiedPlayingContext> {
-        match self.spotify.current_playing(market.clone()) {
-            Ok(spc) => spc,
-            Err(e) => {
-                println!("Detected error from spotify API: {}", e);
-                self.spotify = match Self::authenticate_spotify(&self.config) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        println!("Received err {}", e);
-                        return None;
-                    }
-                };
-                println!("Reauthenticated client!");
-                self.current_playing(market)
-            }
+    pub async fn current_playing(
+        &mut self,
+        market: Option<Country>,
+    ) -> Option<SimplifiedPlayingContext> {
+        match &self.spotify {
+            Some(spotify) => match spotify.current_playing(market).await {
+                Ok(spc) => spc,
+                Err(e) => {
+                    println!("Detected error from spotify API: {}", e);
+                    let spotify = match Self::authenticate_spotify(&self.config).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            println!("Received err {}", e);
+                            return None;
+                        }
+                    };
+                    println!("Reauthenticated client!");
+                    let res = spotify.current_playing(market).await.unwrap_or(None);
+                    self.spotify = Some(spotify);
+                    res
+                }
+            },
+            None => None,
         }
+    }
+
+    pub async fn connect(&mut self) -> SpotifyWrapperResult<()> {
+        self.spotify = Some(Self::authenticate_spotify(&self.config).await?);
+        Ok(())
     }
 }
 
@@ -99,10 +114,6 @@ impl CachedData {
             previous: None,
             has_uploaded: false,
         }
-    }
-
-    pub fn has_uploaded(&mut self, has_uploaded: bool) {
-        self.has_uploaded = has_uploaded;
     }
 
     pub fn should_upload(&mut self, song: &SimplifiedPlayingContext) -> bool {
@@ -156,19 +167,21 @@ impl Worker {
         })
     }
 
-    pub fn maybe_add_song(&mut self) -> Option<SongPlay> {
-        let current_song = self.spotify.current_playing(Some(Country::UnitedStates));
-        match current_song {
-            Some(s) => {
-                if self.cache.should_upload(&s) {
-                    let value = self.insert_song(&s);
-                    self.cache.has_uploaded(value.is_some());
-                    value
-                } else {
-                    None
-                }
-            }
-            None => None,
+    pub async fn connect(&mut self) -> SpotifyWrapperResult<()> {
+        self.spotify.connect().await
+    }
+
+    pub async fn maybe_add_song(&mut self) -> Option<SongPlay> {
+        let current_song = self
+            .spotify
+            .current_playing(Some(Country::UnitedStates))
+            .await?;
+        if self.cache.should_upload(&current_song) {
+            let value = self.insert_song(&current_song);
+            self.cache.has_uploaded = value.is_some();
+            value
+        } else {
+            None
         }
     }
 
@@ -186,11 +199,8 @@ impl Worker {
         )
     }
 
-    pub fn run(&mut self) {
-        loop {
-            println!("{:?}", self.maybe_add_song());
-            thread::sleep(time::Duration::from_secs(5));
-        }
+    pub async fn run(&mut self) {
+        println!("{:?}", self.maybe_add_song().await);
     }
 }
 
@@ -237,7 +247,7 @@ mod test {
         let song = create_playing_context(Some(30000));
         assert_eq!(true, cache.should_upload(&song));
 
-        cache.has_uploaded(true);
+        cache.has_uploaded = true;
 
         let song = create_playing_context(Some(31000));
         assert_eq!(false, cache.should_upload(&song));

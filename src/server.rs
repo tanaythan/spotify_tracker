@@ -10,7 +10,6 @@ use gotham_derive::*;
 use hyper::{Body, Response, StatusCode};
 use mime;
 use serde::Deserialize;
-use serde_json;
 use std::net::SocketAddrV4;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -54,7 +53,7 @@ impl Server {
         }
     }
 
-    pub fn run(&self) {
+    pub async fn run(&self) {
         gotham::start(self.addr, self.router());
     }
 
