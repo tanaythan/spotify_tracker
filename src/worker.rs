@@ -151,7 +151,7 @@ impl CachedData {
 }
 
 impl Worker {
-    pub fn new(config: &super::Config) -> SpotifyWrapperResult<Self> {
+    pub fn new(config: &super::WorkerConfig) -> SpotifyWrapperResult<Self> {
         let db_conn = establish_connection(config.db_url.clone());
         let cache = CachedData::new();
         let spotify = SpotifyWrapper::new(
