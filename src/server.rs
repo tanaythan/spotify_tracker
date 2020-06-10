@@ -1,5 +1,4 @@
 use crate::db::{establish_connection, lookup_song, lookup_song_by_name};
-use diesel::PgConnection;
 use gotham::helpers::http::response::{create_empty_response, create_response};
 use gotham::middleware::state::StateMiddleware;
 use gotham::pipeline::single::single_pipeline;
@@ -10,12 +9,13 @@ use gotham_derive::*;
 use hyper::{Body, Response, StatusCode};
 use mime;
 use serde::Deserialize;
+use sqlx::postgres::PgPool;
 use std::net::SocketAddrV4;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Clone, StateData)]
 struct RequestConnection {
-    conn: Arc<Mutex<PgConnection>>,
+    conn: PgPool,
 }
 
 impl RequestConnection {

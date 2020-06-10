@@ -1,6 +1,5 @@
-use super::db::{establish_connection, insert_song, SongPlay};
+use super::db::{SongPlay, SongTracker, DB};
 
-use diesel::PgConnection;
 use rspotify::client::Spotify;
 use rspotify::model::context::SimplifiedPlayingContext;
 use rspotify::oauth2::{SpotifyClientCredentials, SpotifyOAuth};
@@ -32,7 +31,7 @@ struct CachedData {
 
 pub struct Worker {
     spotify: SpotifyWrapper,
-    db_conn: PgConnection,
+    db: DB,
     cache: CachedData,
 }
 
@@ -151,8 +150,8 @@ impl CachedData {
 }
 
 impl Worker {
-    pub fn new(config: &super::WorkerConfig) -> SpotifyWrapperResult<Self> {
-        let db_conn = establish_connection(config.db_url.clone());
+    pub async fn new(config: &super::WorkerConfig) -> SpotifyWrapperResult<Self> {
+        let db = DB::connect(&config.db_url).await;
         let cache = CachedData::new();
         let spotify = SpotifyWrapper::new(
             config.client_id.clone(),
@@ -160,11 +159,7 @@ impl Worker {
             config.callback_url.clone(),
         )?;
 
-        Ok(Worker {
-            db_conn,
-            cache,
-            spotify,
-        })
+        Ok(Worker { db, cache, spotify })
     }
 
     pub async fn connect(&mut self) -> SpotifyWrapperResult<()> {
@@ -177,7 +172,7 @@ impl Worker {
             .current_playing(Some(Country::UnitedStates))
             .await?;
         if self.cache.should_upload(&current_song) {
-            let value = self.insert_song(&current_song);
+            let value = self.insert_song(&current_song).await;
             self.cache.has_uploaded = value.is_some();
             value
         } else {
@@ -185,18 +180,19 @@ impl Worker {
         }
     }
 
-    fn insert_song(&self, song: &SimplifiedPlayingContext) -> Option<SongPlay> {
+    async fn insert_song(&self, song: &SimplifiedPlayingContext) -> Option<SongPlay> {
         let full_track = song.item.clone().unwrap();
-        insert_song(
-            &self.db_conn,
-            &full_track.name,
-            full_track
-                .artists
-                .iter()
-                .map(|artist| artist.name.as_str())
-                .collect(),
-            &full_track.album.name,
-        )
+        self.db
+            .insert_song(
+                &full_track.name,
+                full_track
+                    .artists
+                    .iter()
+                    .map(|artist| artist.name.clone())
+                    .collect(),
+                &full_track.album.name,
+            )
+            .await
     }
 
     pub async fn run(&mut self) {
