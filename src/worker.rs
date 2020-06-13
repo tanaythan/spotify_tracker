@@ -1,111 +1,15 @@
-use super::db::{establish_connection, insert_song, SongPlay};
-
-use diesel::PgConnection;
-use rspotify::client::Spotify;
-use rspotify::model::context::SimplifiedPlayingContext;
-use rspotify::oauth2::{SpotifyClientCredentials, SpotifyOAuth};
-use rspotify::senum::Country;
-use rspotify::util::get_token;
-use std::error::Error;
-use std::fmt;
-
-struct OAuthConfig {
-    pub client_id: String,
-    pub client_secret: String,
-    pub callback_url: String,
-}
-
-struct SpotifyWrapper {
-    spotify: Option<Spotify>,
-    config: OAuthConfig,
-}
-
-#[derive(Debug)]
-pub enum SpotifyWrapperError {
-    UnauthenticatedClient,
-}
+use super::db::{SongPlay, SongTracker, DB};
+use super::spotify::{SongData, SpotifyClient, SpotifyWrapper, SpotifyWrapperResult};
 
 struct CachedData {
-    previous: Option<SimplifiedPlayingContext>,
+    previous: Option<SongData>,
     has_uploaded: bool,
 }
 
-pub struct Worker {
-    spotify: SpotifyWrapper,
-    db_conn: PgConnection,
+pub struct Worker<D: SongTracker, S: SpotifyClient> {
+    spotify: S,
+    db: D,
     cache: CachedData,
-}
-
-type SpotifyWrapperResult<T> = Result<T, SpotifyWrapperError>;
-
-impl SpotifyWrapper {
-    pub fn new(
-        client_id: String,
-        client_secret: String,
-        callback_url: String,
-    ) -> SpotifyWrapperResult<Self> {
-        let config = OAuthConfig {
-            client_id,
-            client_secret,
-            callback_url,
-        };
-        Ok(SpotifyWrapper {
-            spotify: None,
-            config,
-        })
-    }
-
-    async fn authenticate_spotify(config: &OAuthConfig) -> SpotifyWrapperResult<Spotify> {
-        let mut oauth = SpotifyOAuth::default()
-            .client_id(&config.client_id)
-            .client_secret(&config.client_secret)
-            .redirect_uri(&config.callback_url)
-            .scope("user-read-currently-playing")
-            .build();
-
-        match get_token(&mut oauth).await {
-            Some(token_info) => {
-                let client_credential = SpotifyClientCredentials::default()
-                    .token_info(token_info)
-                    .build();
-                Ok(Spotify::default()
-                    .client_credentials_manager(client_credential)
-                    .build())
-            }
-            None => Err(SpotifyWrapperError::UnauthenticatedClient),
-        }
-    }
-
-    pub async fn current_playing(
-        &mut self,
-        market: Option<Country>,
-    ) -> Option<SimplifiedPlayingContext> {
-        match &self.spotify {
-            Some(spotify) => match spotify.current_playing(market).await {
-                Ok(spc) => spc,
-                Err(e) => {
-                    println!("Detected error from spotify API: {}", e);
-                    let spotify = match Self::authenticate_spotify(&self.config).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            println!("Received err {}", e);
-                            return None;
-                        }
-                    };
-                    println!("Reauthenticated client!");
-                    let res = spotify.current_playing(market).await.unwrap_or(None);
-                    self.spotify = Some(spotify);
-                    res
-                }
-            },
-            None => None,
-        }
-    }
-
-    pub async fn connect(&mut self) -> SpotifyWrapperResult<()> {
-        self.spotify = Some(Self::authenticate_spotify(&self.config).await?);
-        Ok(())
-    }
 }
 
 impl CachedData {
@@ -116,87 +20,78 @@ impl CachedData {
         }
     }
 
-    pub fn should_upload(&mut self, song: &SimplifiedPlayingContext) -> bool {
-        if self.previous.is_none() {
-            self.previous = Some(song.clone());
+    pub fn should_upload(&self, song: &SongData) -> bool {
+        if let Some(previous_item) = &self.previous {
+            let item = song.progress_ms;
+            let old_item = previous_item.progress_ms;
+
+            match (item, old_item) {
+                (Some(item), Some(old_item)) => {
+                    item > old_item && !self.has_uploaded && item >= 30000
+                }
+                _ => false,
+            }
+        } else {
             let song_duration = song.progress_ms;
-            self.has_uploaded = match song_duration {
+            return match song_duration {
                 Some(ms) => ms >= 30000,
                 None => false,
             };
-            return self.has_uploaded;
         }
-        let item = song.clone().progress_ms;
-        let old_item = self.previous.clone().unwrap().progress_ms;
+    }
 
-        if item.is_none() || old_item.is_none() {
-            return false;
+    pub fn update(&mut self, song: SongData, uploaded: bool) {
+        if let Some(previous) = &self.previous {
+            if !previous.name.eq(&song.name) {
+                self.has_uploaded = false;
+            } else if self.has_uploaded {
+                let prev_ms = previous.progress_ms.unwrap_or(0u32);
+                let curr_ms = song.progress_ms.unwrap_or(0u32);
+                self.has_uploaded = prev_ms <= curr_ms;
+            }
         }
+        self.previous = Some(song);
 
-        let item = item.unwrap();
-        let old_item = old_item.unwrap();
-
-        if item > old_item && self.has_uploaded {
-            return false;
-        } else if item > old_item && !self.has_uploaded {
-            self.previous = Some(song.clone());
-            return item >= 30000;
-        } else if item <= old_item {
-            self.previous = Some(song.clone());
-            self.has_uploaded = false;
-            return false;
+        if !self.has_uploaded {
+            self.has_uploaded = uploaded;
         }
-        false
     }
 }
 
-impl Worker {
-    pub fn new(config: &super::WorkerConfig) -> SpotifyWrapperResult<Self> {
-        let db_conn = establish_connection(config.db_url.clone());
+impl Worker<DB, SpotifyWrapper> {
+    pub async fn with_config(config: super::WorkerConfig) -> SpotifyWrapperResult<Self> {
+        let db = DB::connect(&config.db_url).await;
+        let mut spotify =
+            SpotifyWrapper::new(config.client_id, config.client_secret, config.callback_url)?;
+        spotify.connect().await?;
+        Self::new(db, spotify).await
+    }
+}
+
+impl<D: SongTracker, S: SpotifyClient> Worker<D, S> {
+    pub async fn new(db: D, spotify: S) -> SpotifyWrapperResult<Self> {
         let cache = CachedData::new();
-        let spotify = SpotifyWrapper::new(
-            config.client_id.clone(),
-            config.client_secret.clone(),
-            config.callback_url.clone(),
-        )?;
-
-        Ok(Worker {
-            db_conn,
-            cache,
-            spotify,
-        })
+        Ok(Worker { db, cache, spotify })
     }
-
-    pub async fn connect(&mut self) -> SpotifyWrapperResult<()> {
-        self.spotify.connect().await
-    }
-
     pub async fn maybe_add_song(&mut self) -> Option<SongPlay> {
-        let current_song = self
-            .spotify
-            .current_playing(Some(Country::UnitedStates))
-            .await?;
+        let current_song = self.spotify.current_playing().await?;
         if self.cache.should_upload(&current_song) {
-            let value = self.insert_song(&current_song);
-            self.cache.has_uploaded = value.is_some();
+            let value = self.insert_song(&current_song).await;
+            self.cache.update(current_song, value.is_some());
             value
         } else {
+            self.cache.update(current_song, false);
             None
         }
     }
 
-    fn insert_song(&self, song: &SimplifiedPlayingContext) -> Option<SongPlay> {
-        let full_track = song.item.clone().unwrap();
-        insert_song(
-            &self.db_conn,
-            &full_track.name,
-            full_track
-                .artists
-                .iter()
-                .map(|artist| artist.name.as_str())
-                .collect(),
-            &full_track.album.name,
-        )
+    async fn insert_song(&self, song: &SongData) -> Option<SongPlay> {
+        match (&song.name, &song.artists, &song.album) {
+            (Some(name), Some(artists), Some(album)) => {
+                self.db.insert_song(&name, &artists, &album).await
+            }
+            _ => None,
+        }
     }
 
     pub async fn run(&mut self) {
@@ -204,67 +99,86 @@ impl Worker {
     }
 }
 
-impl fmt::Display for SpotifyWrapperError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SpotifyWrapperError::UnauthenticatedClient => write!(f, "Unauthenticated client!"),
-        }
-    }
-}
-
-impl Error for SpotifyWrapperError {
-    fn description(&self) -> &str {
-        match self {
-            SpotifyWrapperError::UnauthenticatedClient => "Unauthenticated client",
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
-    use super::CachedData;
-    use super::SimplifiedPlayingContext;
+    use super::{SongData, SongPlay, SongTracker, SpotifyClient, Worker};
+    use async_trait::async_trait;
+    use std::sync::Mutex;
 
-    fn create_playing_context(progress_ms: Option<u32>) -> SimplifiedPlayingContext {
-        SimplifiedPlayingContext {
-            context: None,
-            is_playing: true,
-            progress_ms,
-            timestamp: 0,
-            item: None,
+    type FakeDB = Mutex<Vec<SongPlay>>;
+
+    #[derive(Default)]
+    struct FakeSpotify {
+        pub val_to_return: Option<SongData>,
+    }
+
+    #[async_trait]
+    impl SpotifyClient for FakeSpotify {
+        async fn current_playing(&mut self) -> Option<SongData> {
+            self.val_to_return.clone()
         }
     }
 
-    #[test]
-    fn test_cache() {
-        let mut cache = CachedData::new();
+    #[async_trait]
+    impl SongTracker for FakeDB {
+        async fn insert_song(
+            &self,
+            name: &str,
+            artist: &[String],
+            album: &str,
+        ) -> Option<SongPlay> {
+            let mut inner_vec = self.lock().expect("Able to unwrap LockResult in tests");
+            let id = inner_vec.len() as i32;
+            let song_play = SongPlay {
+                id,
+                song_name: name.into(),
+                song_artist: artist.into(),
+                song_album: album.into(),
+                time: None,
+            };
+            inner_vec.push(song_play.clone());
+            Some(song_play)
+        }
+    }
+
+    fn create_playing_context(progress_ms: Option<u32>) -> SongData {
+        SongData {
+            name: Some("".into()),
+            artists: Some(Vec::default()),
+            album: Some("".into()),
+            progress_ms,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cache() {
+        let fake_db = FakeDB::new(Vec::new());
+        let fake_spotify = FakeSpotify::default();
+        let mut worker = Worker::new(fake_db, fake_spotify).await.unwrap();
         let song = create_playing_context(Some(10));
-        assert_eq!(false, cache.should_upload(&song));
+        worker.spotify.val_to_return = Some(song);
+        assert_eq!(false, worker.maybe_add_song().await.is_some());
 
-        let song = create_playing_context(Some(100));
-        assert_eq!(false, cache.should_upload(&song));
+        worker.spotify.val_to_return = Some(create_playing_context(Some(100)));
+        assert_eq!(false, worker.maybe_add_song().await.is_some());
 
-        let song = create_playing_context(Some(30000));
-        assert_eq!(true, cache.should_upload(&song));
+        worker.spotify.val_to_return = Some(create_playing_context(Some(30000)));
+        assert_eq!(true, worker.maybe_add_song().await.is_some());
+        assert_eq!(false, worker.maybe_add_song().await.is_some());
 
-        cache.has_uploaded = true;
+        worker.spotify.val_to_return = Some(create_playing_context(Some(29000)));
+        assert_eq!(false, worker.maybe_add_song().await.is_some());
 
-        let song = create_playing_context(Some(31000));
-        assert_eq!(false, cache.should_upload(&song));
+        worker.spotify.val_to_return = Some(create_playing_context(Some(30000)));
+        assert_eq!(true, worker.maybe_add_song().await.is_some());
 
-        let song = create_playing_context(Some(29000));
-        assert_eq!(false, cache.should_upload(&song));
+        worker.spotify.val_to_return = Some(create_playing_context(Some(33000)));
+        assert_eq!(false, worker.maybe_add_song().await.is_some());
 
-        let song = create_playing_context(Some(30000));
-        assert_eq!(true, cache.should_upload(&song));
+        worker.spotify.val_to_return = Some(create_playing_context(Some(34000)));
+        assert_eq!(false, worker.maybe_add_song().await.is_some());
 
-        let song = create_playing_context(Some(33000));
-        assert_eq!(true, cache.should_upload(&song));
-
-        let song = create_playing_context(Some(34000));
-        assert_eq!(true, cache.should_upload(&song));
-
-        let song = create_playing_context(Some(34000));
-        assert_eq!(false, cache.should_upload(&song));
+        worker.spotify.val_to_return = Some(create_playing_context(Some(34000)));
+        assert_eq!(false, worker.maybe_add_song().await.is_some());
     }
 }

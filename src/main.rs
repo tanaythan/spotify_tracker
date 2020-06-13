@@ -1,14 +1,8 @@
 mod db;
-mod schema;
-mod server;
+mod spotify;
 mod worker;
 
-#[macro_use]
-extern crate diesel;
-extern crate tokio;
-
 use dotenv;
-use server::Server;
 use worker::Worker;
 
 use std::{thread, time};
@@ -24,30 +18,17 @@ pub struct WorkerConfig {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv::dotenv().expect("Environment variables loaded");
+    let db_url = dotenv::var("DATABASE_URL").unwrap();
     let config = WorkerConfig {
         client_id: dotenv::var("CLIENT_ID").unwrap(),
         client_secret: dotenv::var("CLIENT_SECRET").unwrap(),
         callback_url: dotenv::var("CALLBACK_URL").unwrap(),
-        db_url: dotenv::var("DATABASE_URL").unwrap(),
+        db_url: db_url.clone(),
     };
+    let mut worker = Worker::with_config(config).await.unwrap();
 
-    let server = Server::new(config.db_url.clone());
-
-    tokio::spawn(async {
-        loop {
-            let config = WorkerConfig {
-                client_id: dotenv::var("CLIENT_ID").unwrap(),
-                client_secret: dotenv::var("CLIENT_SECRET").unwrap(),
-                callback_url: dotenv::var("CALLBACK_URL").unwrap(),
-                db_url: dotenv::var("DATABASE_URL").unwrap(),
-            };
-            let mut worker = Worker::new(&config).unwrap();
-            worker.connect().await.unwrap();
-            worker.run().await;
-            thread::sleep(time::Duration::from_secs(5));
-        }
-    });
-
-    server.run().await;
-    Ok(())
+    loop {
+        worker.run().await;
+        thread::sleep(time::Duration::from_secs(5));
+    }
 }
