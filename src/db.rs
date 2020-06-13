@@ -19,10 +19,10 @@ impl DB {
 
 #[async_trait]
 pub trait SongTracker {
-    async fn insert_song(&self, name: &str, artist: Vec<String>, album: &str) -> Option<SongPlay>;
+    async fn insert_song(&self, name: &str, artists: &[String], album: &str) -> Option<SongPlay>;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SongPlay {
     pub id: i32,
     pub song_name: String,
@@ -31,63 +31,24 @@ pub struct SongPlay {
     pub time: Option<PrimitiveDateTime>,
 }
 
-pub struct NewSongPlay<'a> {
-    pub song_name: &'a str,
-    pub song_artist: Vec<&'a str>,
-    pub song_album: &'a str,
-}
-
 #[async_trait]
 impl SongTracker for DB {
-    async fn insert_song(&self, name: &str, artist: Vec<String>, album: &str) -> Option<SongPlay> {
-        let res = sqlx::query!(
-            "INSERT INTO song_plays (song_name, song_artist, song_album) VALUES ($1, $2, $3)",
+    async fn insert_song(&self, name: &str, artists: &[String], album: &str) -> Option<SongPlay> {
+        let res = sqlx::query_as!(
+            SongPlay,
+            "INSERT INTO song_plays (song_name, song_artist, song_album) VALUES ($1, $2, $3) RETURNING id, song_name, song_album, song_artist, time",
             name,
-            &artist,
+            artists,
             album,
         )
-        .execute(&self.db)
+        .fetch_one(&self.db)
         .await;
         match res {
-            Ok(_) => Some(SongPlay {
-                id: 0,
-                song_name: name.into(),
-                song_artist: artist,
-                song_album: album.into(),
-                time: None,
-            }),
-            Err(_) => None,
-        }
-    }
-}
-
-pub async fn lookup_song_by_name<'a>(db: &PgPool, song: &'a str) -> Option<Vec<SongPlay>> {
-    let res = sqlx::query_as!(
-        SongPlay,
-        "SELECT * from song_plays where song_name = $1",
-        song,
-    )
-    .fetch_all(db)
-    .await;
-    match res {
-        Ok(songs) => Some(songs),
-        Err(e) => {
-            println!("Error retrieving: {}", e);
-            None
-        }
-    }
-}
-
-pub async fn lookup_song(db: &PgPool, id: i32) -> Option<SongPlay> {
-    let res = sqlx::query_as!(SongPlay, "SELECT * from song_plays where id = $1", id)
-        .fetch_one(db)
-        .await;
-
-    match res {
-        Ok(song) => Some(song.clone()),
-        Err(e) => {
-            println!("Error retrieving: {}", e);
-            None
+            Ok(play) => Some(play),
+            Err(e) => {
+                eprintln!("Detected error inserting into DB: {}", e);
+                None
+            }
         }
     }
 }

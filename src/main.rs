@@ -1,4 +1,5 @@
 mod db;
+mod spotify;
 mod worker;
 
 use dotenv;
@@ -24,8 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         callback_url: dotenv::var("CALLBACK_URL").unwrap(),
         db_url: db_url.clone(),
     };
-    let mut worker = Worker::new(&config).await.unwrap();
-    worker.connect().await.unwrap();
+    let mut worker = Worker::with_config(config).await.unwrap();
 
     loop {
         worker.run().await;
